@@ -421,452 +421,395 @@
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
   <script>
     document.addEventListener('DOMContentLoaded', function() {
-      const form = document.getElementById('strokeForm');
-      let mlModel = null;
-      let scaler = null;
-      
-      // Load ML model and scaler
-      async function loadModels() {
-        try {
-          // Load the XGBoost model (converted to TFJS format)
-          mlModel = await tf.loadGraphModel('heartstroke.json');
-          
-          // Load the scaler parameters
-          const scalerResponse = await fetch('scaler.pkl');
-          // Note: In a real implementation, you would need to parse the .pkl file
-          // This is a simplified approach - you might need a proper Python backend
-          // to serve the scaler parameters in JSON format
-          scaler = {
-            mean: [50, 0.5, 25, 200, 0.2, 0.1, 0.2, 0.3, 0.1], // Example values
-            scale: [15, 0.5, 5, 50, 0.4, 0.3, 0.4, 0.45, 0.3]  // Example values
-          };
-        } catch (error) {
-          console.error('Error loading models:', error);
+  const form = document.getElementById('strokeForm');
+  
+  form.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    // Show loading state
+    document.getElementById('loadingIndicator').style.display = 'block';
+    document.getElementById('result-container').style.display = 'none';
+
+    try {
+      // Get all form values
+      const formData = {
+        age: parseFloat(document.getElementById('age').value),
+        sex: document.getElementById('sex').value,
+        bmi: parseFloat(document.getElementById('bmi').value),
+        cholesterol: parseFloat(document.getElementById('cholesterol').value),
+        hypertension: parseInt(document.getElementById('hypertension').value),
+        atrial_fibrillation: parseInt(document.getElementById('atrial-fibrillation').value),
+        diabetes: parseInt(document.getElementById('diabetes').value),
+        smoking: parseInt(document.getElementById('smoking').value),
+        previous_stroke: parseInt(document.getElementById('previous-stroke').value)
+      };
+
+      // Validate all fields are filled
+      for (const key in formData) {
+        if (isNaN(formData[key]) && key !== 'sex') {
+          throw new Error('Please fill in all fields');
         }
       }
+
+      // 1. First calculate risk using medical algorithm
+      const medicalRiskPercentage = calculateMedicalRisk(formData);
       
-      // Load models when page loads
-      loadModels();
-      
-      form.addEventListener('submit', async function(e) {
-        e.preventDefault();
-        
-        // Show loading state
-        document.getElementById('loadingIndicator').style.display = 'block';
-        document.getElementById('result-container').style.display = 'none';
-
-        try {
-          // Get all form values
-          const formData = {
-            age: parseFloat(document.getElementById('age').value),
-            sex: document.getElementById('sex').value,
-            bmi: parseFloat(document.getElementById('bmi').value),
-            cholesterol: parseFloat(document.getElementById('cholesterol').value),
-            hypertension: parseInt(document.getElementById('hypertension').value),
-            atrial_fibrillation: parseInt(document.getElementById('atrial-fibrillation').value),
-            diabetes: parseInt(document.getElementById('diabetes').value),
-            smoking: parseInt(document.getElementById('smoking').value),
-            previous_stroke: parseInt(document.getElementById('previous-stroke').value)
-          };
-
-          // Validate all fields are filled
-          for (const key in formData) {
-            if (isNaN(formData[key]) {
-              throw new Error('Please fill in all fields');
-            }
-          }
-
-          // 1. First calculate risk using medical algorithm
-          const medicalRiskPercentage = calculateMedicalRisk(formData);
-          
-          // 2. Then calculate risk using ML model
-          const mlRiskPercentage = await calculateMLRisk(formData);
-          
-          // 3. Combine both results (weighted average)
-          const combinedRiskPercentage = combineRisks(medicalRiskPercentage, mlRiskPercentage);
-          
-          // Prepare result object
-          const result = {
-            medical_risk: medicalRiskPercentage,
-            ml_risk: mlRiskPercentage,
-            combined_risk: combinedRiskPercentage,
-            formData: formData
-          };
-
-          displayResults(result);
-          
-        } catch (error) {
-          console.error('Error:', error);
-          showError(error.message || 'Failed to get prediction. Please try again.');
-        } finally {
-          document.getElementById('loadingIndicator').style.display = 'none';
-        }
+      // 2. Then calculate risk using ML model via API call
+      const mlResponse = await fetch('/predict', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formData)
       });
-
-      // Medical risk calculation (1-100% scale)
-      function calculateMedicalRisk(formData) {
-        let riskScore = 1; // Base score
-        
-        // Age factors (max +40%)
-        if (formData.age >= 60) riskScore += 40;
-        else if (formData.age >= 40) riskScore += 20;
-        
-        // Sex factors (max +5%)
-        if (formData.sex === 'male') riskScore += 5;
-        
-        // BMI factors (max +15%)
-        if (formData.bmi < 18.5) riskScore += 5;
-        else if (formData.bmi >= 30) riskScore += 15;
-        else if (formData.bmi >= 25) riskScore += 10;
-        
-        // Cholesterol factors (max +15%)
-        if (formData.cholesterol >= 240) riskScore += 15;
-        else if (formData.cholesterol >= 200) riskScore += 10;
-        
-        // Blood pressure factors (max +20%)
-        if (formData.hypertension === 2) riskScore += 20;
-        else if (formData.hypertension === 1) riskScore += 10;
-        
-        // Medical conditions (max +30%)
-        if (formData.atrial_fibrillation === 1) riskScore += 20;
-        if (formData.diabetes === 1) riskScore += 15;
-        if (formData.smoking === 1) riskScore += 10;
-        if (formData.previous_stroke === 1) riskScore += 30;
-        
-        // Convert to percentage (1-100%)
-        const percentage = Math.min(100, Math.max(1, riskScore));
-        
-        return percentage;
-      }
-
-      // ML model risk calculation
-      async function calculateMLRisk(formData) {
-        if (!mlModel || !scaler) {
-          throw new Error('ML model not loaded yet');
-        }
-        
-        // Convert form data to ML model input format
-        const inputFeatures = [
-          formData.age,
-          formData.sex === 'male' ? 1 : 0,
-          formData.bmi,
-          formData.cholesterol,
-          formData.hypertension,
-          formData.atrial_fibrillation,
-          formData.diabetes,
-          formData.smoking,
-          formData.previous_stroke
-        ];
-        
-        // Scale the features (using simplified scaling - in real app use proper scaler)
-        const scaledFeatures = inputFeatures.map((val, i) => {
-          return (val - scaler.mean[i]) / scaler.scale[i];
-        });
-        
-        // Convert to tensor
-        const inputTensor = tf.tensor2d([scaledFeatures]);
-        
-        // Make prediction
-        const prediction = mlModel.predict(inputTensor);
-        const predictionData = await prediction.data();
-        
-        // Get probability (assuming binary classification)
-        const mlProbability = predictionData[0]; // Probability of stroke
-        
-        // Convert to percentage (0-100%)
-        const mlPercentage = mlProbability * 100;
-        
-        // Clean up
-        inputTensor.dispose();
-        prediction.dispose();
-        
-        return mlPercentage;
+      
+      if (!mlResponse.ok) {
+        throw new Error('Failed to get ML prediction');
       }
       
-      // Combine medical and ML risk assessments
-      function combineRisks(medicalRisk, mlRisk) {
-        // Weighted average (60% ML model, 40% medical algorithm)
-        // You can adjust these weights based on which you trust more
-        const combined = (0.6 * mlRisk) + (0.4 * medicalRisk);
-        return Math.min(100, Math.max(1, combined));
-      }
+      const mlData = await mlResponse.json();
+      const mlRiskPercentage = mlData.risk_percentage;
+      
+      // 3. Combine both results (weighted average)
+      const combinedRiskPercentage = combineRisks(medicalRiskPercentage, mlRiskPercentage);
+      
+      // Prepare result object
+      const result = {
+        medical_risk: medicalRiskPercentage,
+        ml_risk: mlRiskPercentage,
+        combined_risk: combinedRiskPercentage,
+        formData: formData
+      };
 
-      function displayResults(result) {
-        const medicalRisk = result.medical_risk;
-        const mlRisk = result.ml_risk;
-        const combinedRisk = result.combined_risk;
-        const formData = result.formData;
-        const sex = formData.sex;
-        
-        // Display model comparisons
-        document.getElementById('medical-risk').textContent = `${medicalRisk.toFixed(1)}%`;
-        document.getElementById('ml-risk').textContent = `${mlRisk.toFixed(1)}%`;
-        document.getElementById('final-risk').textContent = `${combinedRisk.toFixed(1)}%`;
-        
-        // Determine risk level and class for final result
-        let riskLevel, riskClass, riskEmoji;
-        if (combinedRisk < 5) {
-          riskLevel = "🟢 Very Low Risk";
-          riskClass = "risk-very-low";
-          riskEmoji = "🟢";
-        } else if (combinedRisk < 10) {
-          riskLevel = "🟢 Low Risk";
-          riskClass = "risk-low";
-          riskEmoji = "🟢";
-        } else if (combinedRisk < 20) {
-          riskLevel = "🟡 Moderate Risk";
-          riskClass = "risk-moderate";
-          riskEmoji = "🟡";
-        } else if (combinedRisk < 30) {
-          riskLevel = "🟠 Elevated Risk";
-          riskClass = "risk-elevated";
-          riskEmoji = "🟠";
-        } else if (combinedRisk < 40) {
-          riskLevel = "🔴 High Risk";
-          riskClass = "risk-high";
-          riskEmoji = "🔴";
-        } else if (combinedRisk < 60) {
-          riskLevel = "🔴 Serious Risk";
-          riskClass = "risk-high";
-          riskEmoji = "🔴";
-        } else {
-          riskLevel = "🚨 Critical Risk";
-          riskClass = "risk-critical";
-          riskEmoji = "🚨";
-        }
-        
-        // Update final risk level
-        document.getElementById('final-risk-level').textContent = `${riskEmoji} ${riskLevel}`;
-        
-        // Set risk message
-        const riskMessages = {
-          "risk-very-low": "🌟 Excellent! Your stroke risk is very low. Keep maintaining your healthy habits!",
-          "risk-low": "👍 Good news! Your stroke risk is low. Continue your healthy lifestyle to keep it that way.",
-          "risk-slight": "⚠️ You have slight elevated risk. Small improvements can make a big difference!",
-          "risk-moderate": "🔔 Moderate risk detected. Time to take action with lifestyle changes.",
-          "risk-elevated": "⚠️ Elevated risk! Please consider consulting a healthcare provider.",
-          "risk-high": "🚨 High risk detected! Medical consultation strongly recommended.",
-          "risk-critical": "🆘 Critical risk! Please consult a doctor immediately for evaluation."
-        };
-        document.getElementById('risk-message').textContent = riskMessages[riskClass];
-        
-        // Show contributing risk factors
-        const reasons = [];
-        if (formData.age >= 60) {
-          reasons.push("🔸 <strong>Age 60+</strong> - Stroke risk doubles every decade after age 55");
-        } else if (formData.age >= 40) {
-          reasons.push("🔸 <strong>Age 40-59</strong> - Risk increases with age");
-        }
-        
-        if (formData.bmi < 18.5) {
-          reasons.push("🔸 <strong>Underweight (BMI <18.5)</strong> - May indicate poor nutrition");
-        } else if (formData.bmi >= 30) {
-          reasons.push("🔸 <strong>Obese (BMI ≥30)</strong> - Increases stroke risk by 64%");
-        } else if (formData.bmi >= 25) {
-          reasons.push("🔸 <strong>Overweight (BMI 25-29.9)</strong> - Moderate increased risk");
-        }
-        
-        if (formData.cholesterol >= 240) {
-          reasons.push("🔸 <strong>High cholesterol (≥240 mg/dL)</strong> - Leads to artery blockage");
-        } else if (formData.cholesterol >= 200) {
-          reasons.push("🔸 <strong>Borderline high cholesterol (200-239 mg/dL)</strong>");
-        }
-        
-        if (formData.hypertension === 2) {
-          reasons.push("🔸 <strong>High blood pressure (≥160 mmHg)</strong> - #1 modifiable risk factor");
-        } else if (formData.hypertension === 1) {
-          reasons.push("🔸 <strong>Elevated blood pressure (120-159 mmHg)</strong>");
-        }
-        
-        if (formData.atrial_fibrillation === 1) {
-          reasons.push("🔸 <strong>Atrial fibrillation</strong> - Increases risk 5-fold");
-        }
-        
-        if (formData.diabetes === 1) {
-          reasons.push("🔸 <strong>Diabetes</strong> - Doubles stroke risk");
-        }
-        
-        if (formData.smoking === 1) {
-          reasons.push("🔸 <strong>Smoking (current/former)</strong> - Damages blood vessels");
-        }
-        
-        if (formData.previous_stroke === 1) {
-          reasons.push("🔸 <strong>Previous stroke/TIA</strong> - High risk of recurrence");
-        }
-        
-        const riskReasonsElement = document.getElementById('risk-reasons');
-        if (reasons.length > 0) {
-          riskReasonsElement.innerHTML = reasons.join('<br>');
-        } else {
-          riskReasonsElement.innerHTML = "🔹 No significant risk factors identified";
-        }
-        
-        // Show clinical actions
-        const actionsList = document.getElementById('actions-list');
-        actionsList.innerHTML = '';
-        
-        const clinicalActions = getClinicalActions(combinedRisk, formData);
-        clinicalActions.forEach(action => {
-          const li = document.createElement('li');
-          li.innerHTML = action;
-          actionsList.appendChild(li);
-        });
-        
-        // Show lifestyle recommendations
-        const lifestyleList = document.getElementById('lifestyle-list');
-        lifestyleList.innerHTML = '';
-        
-        const lifestyleRecs = getLifestyleRecommendations(combinedRisk, formData);
-        lifestyleRecs.forEach(rec => {
-          const li = document.createElement('li');
-          li.innerHTML = rec;
-          lifestyleList.appendChild(li);
-        });
-        
-        // Show food recommendations
-        const foodList = document.getElementById('food-list');
-        foodList.innerHTML = '';
-        document.getElementById('gender-display').textContent = sex === 'male' ? 'Male' : 'Female';
-        
-        const foodRecs = getFoodRecommendations(combinedRisk, sex);
-        foodRecs.forEach(food => {
-          const div = document.createElement('div');
-          div.className = 'food-item';
-          div.textContent = food;
-          foodList.appendChild(div);
-        });
-        
-        // Show results
-        const resultContainer = document.getElementById('result-container');
-        resultContainer.className = riskClass;
-        resultContainer.style.display = 'block';
-      }
+      displayResults(result);
+      
+    } catch (error) {
+      console.error('Error:', error);
+      showError(error.message || 'Failed to get prediction. Please try again.');
+    } finally {
+      document.getElementById('loadingIndicator').style.display = 'none';
+    }
+  });
 
-      function getClinicalActions(riskPercentage, formData) {
-        const actions = [];
-        
-        if (riskPercentage >= 30) {
-          actions.push("🩺 <strong>Urgent medical consultation</strong> - Schedule with a doctor immediately");
-          actions.push("💊 <strong>Medication review</strong> - May need blood thinners or BP medications");
-        } else if (riskPercentage >= 20) {
-          actions.push("🩺 <strong>Doctor consultation</strong> - Recommended within next month");
-          actions.push("📝 <strong>Regular BP monitoring</strong> - Check at least weekly");
-        } else if (riskPercentage >= 10) {
-          actions.push("🩺 <strong>Annual checkup</strong> - Important for prevention");
-        }
-        
-        if (formData.hypertension >= 1) {
-          actions.push("❤️ <strong>Blood pressure management</strong> - Target <120/80 mmHg");
-        }
-        
-        if (formData.cholesterol >= 200) {
-          actions.push("🧪 <strong>Lipid profile test</strong> - Check HDL, LDL, triglycerides");
-        }
-        
-        if (formData.atrial_fibrillation === 1) {
-          actions.push("❤️ <strong>Cardiology consult</strong> - For possible anticoagulation");
-        }
-        
-        if (formData.diabetes === 1) {
-          actions.push("🩸 <strong>HbA1c monitoring</strong> - Target <7% for diabetics");
-        }
-        
-        if (actions.length === 0) {
-          actions.push("👍 <strong>No specific clinical actions needed</strong> - Maintain regular checkups");
-        }
-        
-        return actions;
-      }
+  // Medical risk calculation (1-100% scale)
+  function calculateMedicalRisk(formData) {
+    let riskScore = 1; // Base score
+    
+    // Age factors (max +40%)
+    if (formData.age >= 60) riskScore += 40;
+    else if (formData.age >= 40) riskScore += 20;
+    
+    // Sex factors (max +5%)
+    if (formData.sex === 'male') riskScore += 5;
+    
+    // BMI factors (max +15%)
+    if (formData.bmi < 18.5) riskScore += 5;
+    else if (formData.bmi >= 30) riskScore += 15;
+    else if (formData.bmi >= 25) riskScore += 10;
+    
+    // Cholesterol factors (max +15%)
+    if (formData.cholesterol >= 240) riskScore += 15;
+    else if (formData.cholesterol >= 200) riskScore += 10;
+    
+    // Blood pressure factors (max +20%)
+    if (formData.hypertension === 2) riskScore += 20;
+    else if (formData.hypertension === 1) riskScore += 10;
+    
+    // Medical conditions (max +30%)
+    if (formData.atrial_fibrillation === 1) riskScore += 20;
+    if (formData.diabetes === 1) riskScore += 15;
+    if (formData.smoking === 1) riskScore += 10;
+    if (formData.previous_stroke === 1) riskScore += 30;
+    
+    // Convert to percentage (1-100%)
+    const percentage = Math.min(100, Math.max(1, riskScore));
+    
+    return percentage;
+  }
 
-      function getLifestyleRecommendations(riskPercentage, formData) {
-        const recs = [];
-        
-        // General recommendations based on risk level
-        if (riskPercentage >= 30) {
-          recs.push("🚭 <strong>Quit smoking immediately</strong> - Most important change you can make");
-          recs.push("🏋️ <strong>Start supervised exercise</strong> - Begin with 30 min walking daily");
-          recs.push("🧘 <strong>Stress management</strong> - Try meditation or yoga");
-        } else if (riskPercentage >= 20) {
-          recs.push("🚭 <strong>Stop all tobacco use</strong> - Seek help if needed");
-          recs.push("🏃 <strong>Exercise 150+ min/week</strong> - Mix cardio and strength");
-          recs.push("🧂 <strong>Reduce sodium intake</strong> - Aim for <1500mg/day");
-        } else {
-          recs.push("🚶 <strong>Exercise regularly</strong> - 30 minutes most days");
-          recs.push("🥗 <strong>Balanced diet</strong> - Focus on whole foods");
-          recs.push("⚖️ <strong>Maintain healthy weight</strong> - BMI 18.5-24.9 ideal");
-        }
-        
-        // Specific recommendations based on risk factors
-        if (formData.bmi >= 25) {
-          recs.push("⚖️ <strong>Weight loss</strong> - Even 5-10% reduction helps");
-        }
-        
-        if (formData.hypertension >= 1) {
-          recs.push("🧂 <strong>Low-sodium diet</strong> - Avoid processed foods");
-        }
-        
-        if (formData.cholesterol >= 200) {
-          recs.push("🥑 <strong>Healthy fats</strong> - More nuts, fish, olive oil");
-        }
-        
-        if (formData.smoking === 1) {
-          recs.push("🚭 <strong>Smoking cessation</strong> - Reduces risk by 50% in 1 year");
-        }
-        
-        if (formData.diabetes === 1) {
-          recs.push("🍞 <strong>Carb control</strong> - Focus on low glycemic index foods");
-        }
-        
-        return recs;
-      }
+  // Combine medical and ML risk assessments
+  function combineRisks(medicalRisk, mlRisk) {
+    // Weighted average (60% ML model, 40% medical algorithm)
+    const combined = (0.6 * mlRisk) + (0.4 * medicalRisk);
+    return Math.min(100, Math.max(1, combined));
+  }
 
-      function getFoodRecommendations(riskPercentage, sex) {
-        // Determine risk category for food recommendations
-        let riskCategory;
-        if (riskPercentage < 10) riskCategory = "low";
-        else if (riskPercentage < 20) riskCategory = "moderate";
-        else if (riskPercentage < 30) riskCategory = "high";
-        else riskCategory = "critical";
-        
-        // Gender-specific food recommendations
-        const foods = {
-          "low": {
-            "male": ["Salmon 🐟", "Avocado 🥑", "Almonds 🌰", "Leafy greens 🥬", "Oatmeal 🥣", "Blueberries 🫐", "Eggs 🥚", "Greek yogurt 🥛"],
-            "female": ["Berries 🍓", "Greek yogurt 🥛", "Dark chocolate 🍫", "Walnuts 🌰", "Spinach 🥬", "Quinoa 🍚", "Chia seeds 🌱", "Sweet potatoes 🍠"]
-          },
-          "moderate": {
-            "male": ["Lean chicken 🍗", "Brown rice 🍚", "Chia seeds 🌱", "Broccoli 🥦", "Olive oil 🫒", "Turkey 🦃", "Lentils 🥣", "Tomatoes 🍅"],
-            "female": ["Quinoa 🍚", "Lentils 🥣", "Salmon 🐟", "Flaxseeds 🌱", "Carrots 🥕", "Beans 🫘", "Oranges 🍊", "Cauliflower 🥦"]
-          },
-          "high": {
-            "male": ["Tofu 🍢", "Beets 🍠", "Garlic 🧄", "Turmeric 🌿", "Dark chocolate 🍫", "Mushrooms 🍄", "Pumpkin seeds 🎃", "Green tea 🍵"],
-            "female": ["Sweet potatoes 🍠", "Soy milk 🥛", "Chia pudding 🍮", "Pumpkin seeds 🌰", "Tomatoes 🍅", "Kale 🥬", "Apples 🍎", "Miso soup 🍲"]
-          },
-          "critical": {
-            "male": ["Boiled vegetables 🥕", "Steamed fish 🐟", "Green tea 🍵", "Whole wheat 🥖", "Berries 🍓", "Oats 🥣", "Cucumber 🥒", "Celery 🥬"],
-            "female": ["Almond milk 🥛", "Cottage cheese 🧀", "Kale 🥬", "Apple cider vinegar 🍏", "Oats 🥣", "Pears 🍐", "Zucchini 🥒", "Pomegranate 🍑"]
-          }
-        };
-        
-        return foods[riskCategory][sex];
-      }
-
-      function showError(message) {
-        const resultContainer = document.getElementById('result-container');
-        resultContainer.className = 'risk-high';
-        resultContainer.style.display = 'block';
-        
-        document.getElementById('risk-percentage').textContent = 'Error';
-        document.getElementById('risk-level').textContent = '';
-        document.getElementById('risk-message').textContent = message;
-        
-        // Hide recommendation sections
-        document.getElementById('risk-factors').style.display = 'none';
-        document.getElementById('clinical-actions').style.display = 'none';
-        document.getElementById('lifestyle-recommendations').style.display = 'none';
-        document.getElementById('diet-recommendations').style.display = 'none';
-      }
+  function displayResults(result) {
+    const medicalRisk = result.medical_risk;
+    const mlRisk = result.ml_risk;
+    const combinedRisk = result.combined_risk;
+    const formData = result.formData;
+    const sex = formData.sex;
+    
+    // Display model comparisons
+    document.getElementById('medical-risk').textContent = `${medicalRisk.toFixed(1)}%`;
+    document.getElementById('ml-risk').textContent = `${mlRisk.toFixed(1)}%`;
+    document.getElementById('final-risk').textContent = `${combinedRisk.toFixed(1)}%`;
+    
+    // Determine risk level and class for final result
+    let riskLevel, riskClass, riskEmoji;
+    if (combinedRisk < 5) {
+      riskLevel = "🟢 Very Low Risk";
+      riskClass = "risk-very-low";
+      riskEmoji = "🟢";
+    } else if (combinedRisk < 10) {
+      riskLevel = "🟢 Low Risk";
+      riskClass = "risk-low";
+      riskEmoji = "🟢";
+    } else if (combinedRisk < 20) {
+      riskLevel = "🟡 Moderate Risk";
+      riskClass = "risk-moderate";
+      riskEmoji = "🟡";
+    } else if (combinedRisk < 30) {
+      riskLevel = "🟠 Elevated Risk";
+      riskClass = "risk-elevated";
+      riskEmoji = "🟠";
+    } else if (combinedRisk < 40) {
+      riskLevel = "🔴 High Risk";
+      riskClass = "risk-high";
+      riskEmoji = "🔴";
+    } else if (combinedRisk < 60) {
+      riskLevel = "🔴 Serious Risk";
+      riskClass = "risk-high";
+      riskEmoji = "🔴";
+    } else {
+      riskLevel = "🚨 Critical Risk";
+      riskClass = "risk-critical";
+      riskEmoji = "🚨";
+    }
+    
+    // Update final risk level
+    document.getElementById('final-risk-level').textContent = `${riskEmoji} ${riskLevel}`;
+    
+    // Set risk message
+    const riskMessages = {
+      "risk-very-low": "🌟 Excellent! Your stroke risk is very low. Keep maintaining your healthy habits!",
+      "risk-low": "👍 Good news! Your stroke risk is low. Continue your healthy lifestyle to keep it that way.",
+      "risk-slight": "⚠️ You have slight elevated risk. Small improvements can make a big difference!",
+      "risk-moderate": "🔔 Moderate risk detected. Time to take action with lifestyle changes.",
+      "risk-elevated": "⚠️ Elevated risk! Please consider consulting a healthcare provider.",
+      "risk-high": "🚨 High risk detected! Medical consultation strongly recommended.",
+      "risk-critical": "🆘 Critical risk! Please consult a doctor immediately for evaluation."
+    };
+    document.getElementById('risk-message').textContent = riskMessages[riskClass];
+    
+    // Show contributing risk factors
+    const reasons = [];
+    if (formData.age >= 60) {
+      reasons.push("🔸 <strong>Age 60+</strong> - Stroke risk doubles every decade after age 55");
+    } else if (formData.age >= 40) {
+      reasons.push("🔸 <strong>Age 40-59</strong> - Risk increases with age");
+    }
+    
+    if (formData.bmi < 18.5) {
+      reasons.push("🔸 <strong>Underweight (BMI <18.5)</strong> - May indicate poor nutrition");
+    } else if (formData.bmi >= 30) {
+      reasons.push("🔸 <strong>Obese (BMI ≥30)</strong> - Increases stroke risk by 64%");
+    } else if (formData.bmi >= 25) {
+      reasons.push("🔸 <strong>Overweight (BMI 25-29.9)</strong> - Moderate increased risk");
+    }
+    
+    if (formData.cholesterol >= 240) {
+      reasons.push("🔸 <strong>High cholesterol (≥240 mg/dL)</strong> - Leads to artery blockage");
+    } else if (formData.cholesterol >= 200) {
+      reasons.push("🔸 <strong>Borderline high cholesterol (200-239 mg/dL)</strong>");
+    }
+    
+    if (formData.hypertension === 2) {
+      reasons.push("🔸 <strong>High blood pressure (≥160 mmHg)</strong> - #1 modifiable risk factor");
+    } else if (formData.hypertension === 1) {
+      reasons.push("🔸 <strong>Elevated blood pressure (120-159 mmHg)</strong>");
+    }
+    
+    if (formData.atrial_fibrillation === 1) {
+      reasons.push("🔸 <strong>Atrial fibrillation</strong> - Increases risk 5-fold");
+    }
+    
+    if (formData.diabetes === 1) {
+      reasons.push("🔸 <strong>Diabetes</strong> - Doubles stroke risk");
+    }
+    
+    if (formData.smoking === 1) {
+      reasons.push("🔸 <strong>Smoking (current/former)</strong> - Damages blood vessels");
+    }
+    
+    if (formData.previous_stroke === 1) {
+      reasons.push("🔸 <strong>Previous stroke/TIA</strong> - High risk of recurrence");
+    }
+    
+    const riskReasonsElement = document.getElementById('risk-reasons');
+    if (reasons.length > 0) {
+      riskReasonsElement.innerHTML = reasons.join('<br>');
+    } else {
+      riskReasonsElement.innerHTML = "🔹 No significant risk factors identified";
+    }
+    
+    // Show clinical actions
+    const actionsList = document.getElementById('actions-list');
+    actionsList.innerHTML = '';
+    
+    const clinicalActions = getClinicalActions(combinedRisk, formData);
+    clinicalActions.forEach(action => {
+      const li = document.createElement('li');
+      li.innerHTML = action;
+      actionsList.appendChild(li);
     });
+    
+    // Show lifestyle recommendations
+    const lifestyleList = document.getElementById('lifestyle-list');
+    lifestyleList.innerHTML = '';
+    
+    const lifestyleRecs = getLifestyleRecommendations(combinedRisk, formData);
+    lifestyleRecs.forEach(rec => {
+      const li = document.createElement('li');
+      li.innerHTML = rec;
+      lifestyleList.appendChild(li);
+    });
+    
+    // Show food recommendations
+    const foodList = document.getElementById('food-list');
+    foodList.innerHTML = '';
+    document.getElementById('gender-display').textContent = sex === 'male' ? 'Male' : 'Female';
+    
+    const foodRecs = getFoodRecommendations(combinedRisk, sex);
+    foodRecs.forEach(food => {
+      const div = document.createElement('div');
+      div.className = 'food-item';
+      div.textContent = food;
+      foodList.appendChild(div);
+    });
+    
+    // Show results
+    const resultContainer = document.getElementById('result-container');
+    resultContainer.className = riskClass;
+    resultContainer.style.display = 'block';
+  }
+
+  function getClinicalActions(riskPercentage, formData) {
+    const actions = [];
+    
+    if (riskPercentage >= 30) {
+      actions.push("🩺 <strong>Urgent medical consultation</strong> - Schedule with a doctor immediately");
+      actions.push("💊 <strong>Medication review</strong> - May need blood thinners or BP medications");
+    } else if (riskPercentage >= 20) {
+      actions.push("🩺 <strong>Doctor consultation</strong> - Recommended within next month");
+      actions.push("📝 <strong>Regular BP monitoring</strong> - Check at least weekly");
+    } else if (riskPercentage >= 10) {
+      actions.push("🩺 <strong>Annual checkup</strong> - Important for prevention");
+    }
+    
+    if (formData.hypertension >= 1) {
+      actions.push("❤️ <strong>Blood pressure management</strong> - Target <120/80 mmHg");
+    }
+    
+    if (formData.cholesterol >= 200) {
+      actions.push("🧪 <strong>Lipid profile test</strong> - Check HDL, LDL, triglycerides");
+    }
+    
+    if (formData.atrial_fibrillation === 1) {
+      actions.push("❤️ <strong>Cardiology consult</strong> - For possible anticoagulation");
+    }
+    
+    if (formData.diabetes === 1) {
+      actions.push("🩸 <strong>HbA1c monitoring</strong> - Target <7% for diabetics");
+    }
+    
+    if (actions.length === 0) {
+      actions.push("👍 <strong>No specific clinical actions needed</strong> - Maintain regular checkups");
+    }
+    
+    return actions;
+  }
+
+  function getLifestyleRecommendations(riskPercentage, formData) {
+    const recs = [];
+    
+    // General recommendations based on risk level
+    if (riskPercentage >= 30) {
+      recs.push("🚭 <strong>Quit smoking immediately</strong> - Most important change you can make");
+      recs.push("🏋️ <strong>Start supervised exercise</strong> - Begin with 30 min walking daily");
+      recs.push("🧘 <strong>Stress management</strong> - Try meditation or yoga");
+    } else if (riskPercentage >= 20) {
+      recs.push("🚭 <strong>Stop all tobacco use</strong> - Seek help if needed");
+      recs.push("🏃 <strong>Exercise 150+ min/week</strong> - Mix cardio and strength");
+      recs.push("🧂 <strong>Reduce sodium intake</strong> - Aim for <1500mg/day");
+    } else {
+      recs.push("🚶 <strong>Exercise regularly</strong> - 30 minutes most days");
+      recs.push("🥗 <strong>Balanced diet</strong> - Focus on whole foods");
+      recs.push("⚖️ <strong>Maintain healthy weight</strong> - BMI 18.5-24.9 ideal");
+    }
+    
+    // Specific recommendations based on risk factors
+    if (formData.bmi >= 25) {
+      recs.push("⚖️ <strong>Weight loss</strong> - Even 5-10% reduction helps");
+    }
+    
+    if (formData.hypertension >= 1) {
+      recs.push("🧂 <strong>Low-sodium diet</strong> - Avoid processed foods");
+    }
+    
+    if (formData.cholesterol >= 200) {
+      recs.push("🥑 <strong>Healthy fats</strong> - More nuts, fish, olive oil");
+    }
+    
+    if (formData.smoking === 1) {
+      recs.push("🚭 <strong>Smoking cessation</strong> - Reduces risk by 50% in 1 year");
+    }
+    
+    if (formData.diabetes === 1) {
+      recs.push("🍞 <strong>Carb control</strong> - Focus on low glycemic index foods");
+    }
+    
+    return recs;
+  }
+
+  function getFoodRecommendations(riskPercentage, sex) {
+    // Determine risk category for food recommendations
+    let riskCategory;
+    if (riskPercentage < 10) riskCategory = "low";
+    else if (riskPercentage < 20) riskCategory = "moderate";
+    else if (riskPercentage < 30) riskCategory = "high";
+    else riskCategory = "critical";
+    
+    // Gender-specific food recommendations
+    const foods = {
+      "low": {
+        "male": ["Salmon 🐟", "Avocado 🥑", "Almonds 🌰", "Leafy greens 🥬", "Oatmeal 🥣", "Blueberries 🫐", "Eggs 🥚", "Greek yogurt 🥛"],
+        "female": ["Berries 🍓", "Greek yogurt 🥛", "Dark chocolate 🍫", "Walnuts 🌰", "Spinach 🥬", "Quinoa 🍚", "Chia seeds 🌱", "Sweet potatoes 🍠"]
+      },
+      "moderate": {
+        "male": ["Lean chicken 🍗", "Brown rice 🍚", "Chia seeds 🌱", "Broccoli 🥦", "Olive oil 🫒", "Turkey 🦃", "Lentils 🥣", "Tomatoes 🍅"],
+        "female": ["Quinoa 🍚", "Lentils 🥣", "Salmon 🐟", "Flaxseeds 🌱", "Carrots 🥕", "Beans 🫘", "Oranges 🍊", "Cauliflower 🥦"]
+      },
+      "high": {
+        "male": ["Tofu 🍢", "Beets 🍠", "Garlic 🧄", "Turmeric 🌿", "Dark chocolate 🍫", "Mushrooms 🍄", "Pumpkin seeds 🎃", "Green tea 🍵"],
+        "female": ["Sweet potatoes 🍠", "Soy milk 🥛", "Chia pudding 🍮", "Pumpkin seeds 🌰", "Tomatoes 🍅", "Kale 🥬", "Apples 🍎", "Miso soup 🍲"]
+      },
+      "critical": {
+        "male": ["Boiled vegetables 🥕", "Steamed fish 🐟", "Green tea 🍵", "Whole wheat 🥖", "Berries 🍓", "Oats 🥣", "Cucumber 🥒", "Celery 🥬"],
+        "female": ["Almond milk 🥛", "Cottage cheese 🧀", "Kale 🥬", "Apple cider vinegar 🍏", "Oats 🥣", "Pears 🍐", "Zucchini 🥒", "Pomegranate 🍑"]
+      }
+    };
+    
+    return foods[riskCategory][sex];
+  }
+
+  function showError(message) {
+    const resultContainer = document.getElementById('result-container');
+    resultContainer.className = 'risk-high';
+    resultContainer.style.display = 'block';
+    
+    document.getElementById('risk-percentage').textContent = 'Error';
+    document.getElementById('risk-level').textContent = '';
+    document.getElementById('risk-message').textContent = message;
+    
+    // Hide recommendation sections
+    document.getElementById('risk-factors').style.display = 'none';
+    document.getElementById('clinical-actions').style.display = 'none';
+    document.getElementById('lifestyle-recommendations').style.display = 'none';
+    document.getElementById('diet-recommendations').style.display = 'none';
+  }
+});
   </script>
 </body>
 </html>
