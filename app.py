@@ -19,7 +19,7 @@ def load_model_and_scaler():
     
     try:
         model_dir = Path(__file__).parent / 'models'
-        model_path = model_dir / 'heartstroke.json'
+        model_path = model_dir / 'strokemodel.json'
         scaler_path = model_dir / 'scaler.pkl'
         
         # Load XGBoost model from JSON
